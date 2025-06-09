@@ -1,8 +1,17 @@
 gnn çıktılarına layernorm koy
 not:
-Modalitelerin embedding'leri farklı davranıyor olabilir. 
+Modalitelerin embedding'leri farklı davranıyor olabilir:
+-Modalite başına ayrı modality-weight token ler verilebilir.
+
+-Veya modalite maskesi ile attention katmanları yönlendirilir.
+
+-Ya da pre-attention re-weighting yapılabilir (learned scalar per modality).
+
+
 Görsel vektör daha yoğun bilgi taşıyabilir. Transformer bu farkı göremezse, "bu ses neden bu kadar gürültülü" diye kriz yaşar. TransformerFusion ı çok dikkatli yazmalıyız.
-attention-weighted topolojik grafikler kullanılabilir görselleştirme için
+attention-weighted topolojik grafikler kullanılabilir görselleştirme için: "attention graph visualization in transformers" networkx lib
+
+
 Transformer’la öğrenilen temsillerin diğer kültürlere mesafesi ölçülebilir.
 temporal attention layer ile yıl farklarına bakılabilir.
 
