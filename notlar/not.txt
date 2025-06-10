@@ -19,3 +19,222 @@ https://arxiv.org/abs/2208.00339
 
 Her millet için karma değil önce ibadeti, sonra mimarisi sonra başka şeyleri böyle böyle yapılacak. yani tematik şekilde işlnecek.
 veya 2. ama yapılabilirse daha iyi yöntem: milletler kümelendirilebilecek kadar eğitilecek ve model oluşturuljp kaydedilecek sonra da fine tune edilecek işlenecek konu kadar.
+
+
+
+Aşağıda paylaştığın akış diyagramını temel alan, PyTorch ve PyTorch Geometric kullanarak yazılmış “tam” bir örnek kod bulabilirsin. Kod üç modaliteyi (metin, görsel, ses) ayrı GNN’lerle işler, multi‐head attention + gating ile fuse eder, epoch sonunda kültürler arası kosinüs benzerliklerini hesaplayıp ona göre custom bir loss uygular.
+
+> Not: Bu örnek tamamen eğitim amaçlı ve “başlasın” diye hazırlanmıştır. Kendi veri setine, edge_index yapına ve hedef kosinüs benzerliklerine (y_true) uygun şekilde adapte etmen gerekecek.
+
+
+
+# multimodal_gnn.py
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.nn import GCNConv, global_mean_pool
+from torch_geometric.data import Data
+import numpy as np
+
+# ----------------------------
+# 1) GNNBranch: her modalite için ayrı GNN
+# ----------------------------
+class GNNBranch(nn.Module):
+    def __init__(self, in_channels, hidden_channels, out_channels):
+        super(GNNBranch, self).__init__()
+        self.conv1 = GCNConv(in_channels, hidden_channels)
+        self.conv2 = GCNConv(hidden_channels, out_channels)
+
+    def forward(self, x, edge_index, batch=None):
+        x = F.relu(self.conv1(x, edge_index))
+        x = self.conv2(x, edge_index)
+        if batch is not None:
+            # Eğer mini‐batch’li çalışıyorsan global pooling
+            x = global_mean_pool(x, batch)
+        return x
+
+
+# ----------------------------
+# 2) AttentionFusion: multi‐head attention + gating
+# ----------------------------
+class AttentionFusion(nn.Module):
+    def __init__(self, embed_dim, num_heads):
+        super(AttentionFusion, self).__init__()
+        self.attn = nn.MultiheadAttention(embed_dim, num_heads)
+        # Her modalite için bir gating vektörü
+        self.gate = nn.Parameter(torch.ones(3, embed_dim))
+
+    def forward(self, feats):
+        """
+        feats: [ [B, D], [B, D], [B, D] ]  -> seq_len=3
+        """
+        # (3, B, D)
+        seq = torch.stack(feats, dim=0)
+        # self-attention
+        attn_out, _ = self.attn(seq, seq, seq)
+        # gating ile ağırlıklandır
+        gated = attn_out * self.gate.unsqueeze(1)  # (3, B, D)
+        # topluca fuse et
+        fused = gated.sum(dim=0)                  # (B, D)
+        return fused
+
+
+# ----------------------------
+# 3) Loss Module: kosinüs benzerliklerine göre custom loss
+# ----------------------------
+class CosineSimilarityLoss(nn.Module):
+    def __init__(self):
+        super(CosineSimilarityLoss, self).__init__()
+
+    def forward(self, y_hat, y_true):
+        # y_hat, y_true: [B, B] şeklinde benzerlik matrisleri
+        return F.mse_loss(y_hat, y_true)
+
+
+# ----------------------------
+# 4) Tüm sistemi birleştiren MultiModelGNN
+# ----------------------------
+class MultiModelGNN(nn.Module):
+    def __init__(self,
+                 text_dim, img_dim, audio_dim,
+                 hidden_dim, embed_dim,
+                 num_heads):
+        super(MultiModelGNN, self).__init__()
+        # her modalite için GNN
+        self.text_branch  = GNNBranch(text_dim,  hidden_dim, embed_dim)
+        self.img_branch   = GNNBranch(img_dim,   hidden_dim, embed_dim)
+        self.audio_branch = GNNBranch(audio_dim, hidden_dim, embed_dim)
+        # fusion katmanı
+        self.fusion = AttentionFusion(embed_dim, num_heads)
+        # post‐fusion MLP
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, embed_dim)
+        )
+
+    def forward(self, data_text, data_img, data_audio):
+        # her biri torch_geometric.data.Data olacak
+        out_t = self.text_branch(data_text.x,  data_text.edge_index,  getattr(data_text, 'batch', None))
+        out_i = self.img_branch( data_img.x,   data_img.edge_index,   getattr(data_img,  'batch', None))
+        out_a = self.audio_branch(data_audio.x,data_audio.edge_index,getattr(data_audio,'batch', None))
+
+        # fuse
+        fused = self.fusion([out_t, out_i, out_a])
+        # final MLP
+        return self.mlp(fused)
+
+
+# ----------------------------
+# 5) Yardımcı: çiftler arası kosinüs benzerliği matrisini hesapla
+# ----------------------------
+def pairwise_cosine_similarity(feats):
+    # feats: [B, D]
+    normed = F.normalize(feats, p=2, dim=1)
+    return torch.matmul(normed, normed.t())  # [B, B]
+
+
+# ----------------------------
+# 6) Örnek veri yükleme
+# ----------------------------
+def load_data():
+    # seninkiler .npy uzantılı dosyalar
+    x_text  = np.load('osmanli_text.npy')    # (N, text_dim)
+    x_img   = np.load('osmanli_img.npy')     # (N, img_dim)
+    x_audio = np.load('osmanli_audio.npy')   # (N, audio_dim)
+
+    N = x_text.shape[0]
+    # tam bağlı (complete) grafik edge_index’i
+    src = []
+    dst = []
+    for i in range(N):
+        for j in range(N):
+            if i!=j:
+                src.append(i)
+                dst.append(j)
+    edge_index = torch.tensor([src,dst], dtype=torch.long)
+
+    # Tek bir grafik olarak paketle
+    data_text = Data(x=torch.tensor(x_text, dtype=torch.float),
+                     edge_index=edge_index)
+    data_img  = Data(x=torch.tensor(x_img,  dtype=torch.float),
+                     edge_index=edge_index)
+    data_audio= Data(x=torch.tensor(x_audio,dtype=torch.float),
+                     edge_index=edge_index)
+
+    # hedef kosinüs benzerlik matrisini de burada oluştur ya da yükle
+    # Örnek olarak random alıyoruz:
+    y_true = pairwise_cosine_similarity(data_text.x)  
+
+    return [(data_text, data_img, data_audio, y_true)]
+
+
+# ----------------------------
+# 7) Eğitim döngüsü
+# ----------------------------
+def main():
+    # Hiperparametreler
+    text_dim, img_dim, audio_dim = 768, 512, 512
+    hidden_dim, embed_dim = 256, 128
+    num_heads = 4
+    lr = 1e-3
+    epochs = 20
+
+    # veri
+    dataset = load_data()  # liste içinde 1 örnek
+    model = MultiModelGNN(text_dim, img_dim, audio_dim, hidden_dim, embed_dim, num_heads)
+    opt   = torch.optim.Adam(model.parameters(), lr=lr)
+    loss_fn = CosineSimilarityLoss()
+
+    for epoch in range(1, epochs+1):
+        model.train()
+        total_loss = 0.0
+
+        for data_t, data_i, data_a, y_true in dataset:
+            opt.zero_grad()
+            # forward
+            out = model(data_t, data_i, data_a)  
+            # out: [N, embed_dim]
+            if out.dim()==1:
+                # eğer batch size=1 ve squeeze olduysa yeniden şekillendir
+                out = out.unsqueeze(0)
+            # y_hat: [N, N]
+            y_hat = pairwise_cosine_similarity(out)
+            loss = loss_fn(y_hat, y_true)
+            loss.backward()
+            opt.step()
+            total_loss += loss.item()
+
+        print(f"Epoch {epoch:02d} — Loss: {total_loss:.4f}")
+
+
+if __name__ == '__main__':
+    main()
+
+Açıklamalar
+
+1. GNNBranch: Her modalite (metin/görsel/ses) için 2 katmanlı bir GCN kullandık.
+
+
+2. AttentionFusion: Modalite çıktılarının sıra boyutunda (seq_len=3) self‐attention’ı çalıştırıp, learnable gating ile ağırlıklandırıyoruz.
+
+
+3. MultiModelGNN: Üç GNN şubesi + fusion + son bir MLP.
+
+
+4. pairwise_cosine_similarity: Epoch sonunda node embedding’ler arasındaki kosinüs benzerlik matrisini çıkarıyoruz.
+
+
+5. CosineSimilarityLoss: MSELoss’u benzerlik matrisleri üzerinde uyguluyor.
+
+
+6. load_data: .npy dosyalarını yüklüyor, tam bağlı bir grafik (edge_index) yaratıyor, ve örnek y_true matrisini veriyor. Burayı kendi etiketlerinle değiştirmen gerekecek.
+
+
+7. main: 20 epoch’luk basit bir eğitim döngüsü.
+
+
+
+Bu iskeleti kendi verine, hedef benzerlik matrislerine ve dilersen başka bir FusionModel (ör. MLPFusion veya TransformerFusion) eklemeye uygun şekilde genişletebilirsin. İyi çalışmalar!
+
