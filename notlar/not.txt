@@ -20,7 +20,7 @@ https://arxiv.org/abs/2208.00339
 Her millet için karma değil önce ibadeti, sonra mimarisi sonra başka şeyleri böyle böyle yapılacak. yani tematik şekilde işlnecek.
 veya 2. ama yapılabilirse daha iyi yöntem: milletler kümelendirilebilecek kadar eğitilecek ve model oluşturuljp kaydedilecek sonra da fine tune edilecek işlenecek konu kadar.
 
-
+skip connect düşün 
 
 Aşağıda paylaştığın akış diyagramını temel alan, PyTorch ve PyTorch Geometric kullanarak yazılmış “tam” bir örnek kod bulabilirsin. Kod üç modaliteyi (metin, görsel, ses) ayrı GNN’lerle işler, multi‐head attention + gating ile fuse eder, epoch sonunda kültürler arası kosinüs benzerliklerini hesaplayıp ona göre custom bir loss uygular.
 
