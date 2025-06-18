@@ -1,3 +1,6 @@
+bert + ner düşün
+
+
 gnn çıktılarına layernorm koy
 not:
 Modalitelerin embedding'leri farklı davranıyor olabilir:
