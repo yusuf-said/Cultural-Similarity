@@ -1,5 +1,5 @@
 bert + ner düşün
-
+modern nlp teknikleri ve graf tabanlı yaklaşımların sosyolojide kullanımı ile açık kaynaklı sohbet botu
 
 gnn çıktılarına layernorm koy
 not:
